@@ -1,0 +1,77 @@
+schema: spec-driven
+
+project: opencode-sessions
+artifact_store:
+  mode: both
+execution_mode: interactive
+chained_pr_strategy: auto-forecast
+review_budget_lines: 400
+
+context: |
+  Tech stack: Python 3.12 project managed with uv; package/config files exist.
+  Architecture: layered Python/Textual application planned; current implementation includes infrastructure, domain, text, and application services.
+  Persistence source: OpenCode SQLite DB discovered via `opencode db path`.
+  Testing: pytest, ruff, ruff format, and mypy are configured through pyproject.toml.
+  Style: private repository; comments and documentation are written in Spanish.
+
+strict_tdd: false
+
+testing:
+  detected: 2026-06-16
+  strict_tdd: false
+  strict_tdd_reason: "Test tooling exists, but strict TDD was not enabled during SDD init; keep Standard Mode unless re-initialized or explicitly changed."
+  test_runner:
+    available: true
+    framework: pytest
+    command: "uv run pytest"
+  layers:
+    unit:
+      available: true
+      tool: pytest
+    integration:
+      available: false
+      tool: null
+    e2e:
+      available: false
+      tool: null
+  coverage:
+    available: false
+    command: null
+  quality_tools:
+    linter:
+      available: true
+      command: "uv run ruff check ."
+    type_checker:
+      available: true
+      command: "uv run mypy"
+    formatter:
+      available: true
+      command: "uv run ruff format --check ."
+  environment_tools:
+    python3: "Python 3.12.3"
+    uv: "available on PATH"
+
+rules:
+  proposal:
+    - Include intent, scope, non-goals, data-source assumptions, and rollback plan for risky changes.
+  specs:
+    - Use RFC 2119 keywords for requirements.
+    - Use Given/When/Then for scenarios.
+  design:
+    - Document SQLite schema assumptions and query strategy before implementation.
+    - Keep OpenCode database access read-only unless a later spec explicitly permits writes.
+  tasks:
+    - Group work into reviewable steps under the configured 400-line review budget.
+    - Define tests before implementation once test tooling is introduced.
+  apply:
+    tdd: false
+    test_command: "uv run pytest"
+    notes:
+      - Python test tooling was introduced in PR 1; strict TDD remains disabled until explicitly changed.
+      - Run pytest, ruff, format check, and mypy before marking an apply slice complete.
+  verify:
+    test_command: "uv run pytest"
+    build_command: null
+    coverage_threshold: 0
+  archive:
+    - Preserve completed change artifacts under openspec/changes/archive/.
