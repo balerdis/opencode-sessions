@@ -9,6 +9,7 @@ El objetivo del proyecto es resolver una situación muy concreta: cuando trabaj�
 - Descubre la base local de OpenCode usando `opencode db path`.
 - Lee la base SQLite en modo solo lectura.
 - Lista únicamente las sesiones cuyo `session.directory` coincide exactamente con el directorio actual.
+- Muestra por defecto solo sesiones raíz y permite alternar a todas las sesiones agrupadas por raíz.
 - Permite filtrar por título, descripción o resumen.
 - Reabre la sesión seleccionada con `opencode --session <id>`.
 
@@ -46,7 +47,7 @@ Flujo principal:
 1. `cli.py` toma el directorio actual con `Path.cwd().resolve()`.
 2. `OpenCodeCli` descubre la base de OpenCode.
 3. `sqlite_repo.py` lee las sesiones en modo solo lectura.
-4. `application.py` arma el estado visible y aplica el filtro.
+4. `application.py` arma el estado visible, aplica el filtro y deriva la vista raíz/todas.
 5. `tui.py` muestra la interfaz y lanza `opencode --session <id>` al presionar `Enter`.
 
 ## Requisitos
@@ -92,9 +93,12 @@ Controles principales:
 | Mover selección sin foco de texto | `j` / `k` |
 | Abrir sesión seleccionada | `Enter` |
 | Recargar sesiones | `r` |
+| Alternar raíces / todas | `Ctrl+T` |
 | Salir | `q` o `Esc` |
 
-Cuando abrís una sesión, la TUI ejecuta OpenCode. Al salir de OpenCode, vuelve a la interfaz restaurando el filtro y la selección.
+La vista inicial muestra sesiones raíz (`parent_id IS NULL`) para reducir ruido de sub-sesiones de agentes. Si una búsqueda coincide solo con una sub-sesión, tanto en vista raíz como en vista “todas” la TUI muestra su raíz disponible inmediatamente arriba como contexto real: esa fila se puede seleccionar y abrir igual que cualquier sesión. Con `Ctrl+T` podés alternar a la vista “todas”, donde las sub-sesiones aparecen debajo de su raíz y las huérfanas quedan identificadas.
+
+Cuando abrís una sesión, la TUI ejecuta OpenCode. Al salir de OpenCode, vuelve a la interfaz restaurando el filtro, el modo de vista y la selección cuando la sesión sigue visible.
 
 ## Seguridad y privacidad
 

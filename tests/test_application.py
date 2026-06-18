@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from opencode_session_navigator.application import SessionListState, SessionNavigator
+from opencode_session_navigator.application import (
+    SessionListState,
+    SessionNavigator,
+    SessionViewMode,
+)
 from opencode_session_navigator.domain import SessionRow
 from opencode_session_navigator.infra.sqlite_repo import SessionRecord
 
@@ -13,6 +17,7 @@ def test_load_construye_filas_con_placeholders_y_contexto() -> None:
         [
             SessionRecord(
                 id="session-123456",
+                parent_id=None,
                 title="  ",
                 directory="/repo",
                 time_created=1,
@@ -38,6 +43,7 @@ def test_load_recorta_descripcion_al_limite_configurado() -> None:
         [
             SessionRecord(
                 id="session-1",
+                parent_id=None,
                 title="Título",
                 directory="/repo",
                 time_created=1,
@@ -59,6 +65,7 @@ def test_load_formatea_contexto_con_timestamp_visible_y_fila_completa() -> None:
         [
             SessionRecord(
                 id="session-abcdef123456",
+                parent_id=None,
                 title="Investigación SQLite",
                 directory="/repo",
                 time_created=1_700_000_000,
@@ -87,6 +94,7 @@ def test_load_elimina_secuencias_de_control_de_textos_visibles() -> None:
         [
             SessionRecord(
                 id="session-1",
+                parent_id=None,
                 title="\x1b[32mTítulo\x1b[0m",
                 directory="/repo",
                 time_created=1,
@@ -123,6 +131,108 @@ def test_busqueda_vacia_devuelve_todas_las_sesiones() -> None:
 
     assert [row.id for row in state.visible_sessions] == ["a", "b"]
     assert state.selected_id == "a"
+
+
+def test_modo_raices_oculta_hijas_y_busqueda_agrega_contexto() -> None:
+    rows = (
+        make_row("raiz", title="Raíz", description="sin match"),
+        make_row("hija", title="Hija", description="contiene sqlite", parent_id="raiz"),
+    )
+
+    state = SessionListState.from_sessions(rows)
+    filtered = state.with_query("sqlite")
+
+    assert [row.id for row in state.visible_sessions] == ["raiz"]
+    assert state.selected_id == "raiz"
+    assert [row.id for row in filtered.visible_sessions] == ["raiz", "hija"]
+    assert filtered.visible_sessions[1].display_title == "└─ Hija"
+
+
+def test_modo_todas_agrupa_raices_hijas_y_huerfanas() -> None:
+    rows = (
+        make_row("raiz", title="Raíz"),
+        make_row("otra-raiz", title="Otra raíz"),
+        make_row("hija", title="Hija", parent_id="raiz"),
+        make_row("huerfana", title="Huérfana", parent_id="externa"),
+    )
+
+    state = SessionListState.from_sessions(rows).with_view_mode(SessionViewMode.ALL)
+
+    assert [row.id for row in state.visible_sessions] == [
+        "raiz",
+        "hija",
+        "otra-raiz",
+        "huerfana",
+    ]
+    assert state.visible_sessions[1].display_title == "└─ Hija"
+    assert state.visible_sessions[3].display_title == "↳ Huérfana · Huérfana"
+
+
+def test_modo_todas_agrupa_raiz_con_dos_hijas() -> None:
+    rows = (
+        make_row("raiz", title="Raíz"),
+        make_row("hija-a", title="Hija A", parent_id="raiz"),
+        make_row("hija-b", title="Hija B", parent_id="raiz"),
+    )
+
+    state = SessionListState.from_sessions(rows).with_view_mode(SessionViewMode.ALL)
+
+    assert [row.id for row in state.visible_sessions] == ["raiz", "hija-a", "hija-b"]
+    assert [row.display_title for row in state.visible_sessions] == [
+        "Raíz",
+        "└─ Hija A",
+        "└─ Hija B",
+    ]
+
+
+def test_modo_todas_mantiene_hija_bajo_raiz_aunque_aparezca_antes_por_recencia() -> None:
+    rows = (
+        make_row("hija-reciente", title="Hija reciente", parent_id="raiz"),
+        make_row("raiz", title="Raíz"),
+        make_row("otra-raiz", title="Otra raíz"),
+    )
+
+    state = SessionListState.from_sessions(rows).with_view_mode(SessionViewMode.ALL)
+
+    assert [row.id for row in state.visible_sessions] == [
+        "raiz",
+        "hija-reciente",
+        "otra-raiz",
+    ]
+    assert state.visible_sessions[1].display_title == "└─ Hija reciente"
+
+
+def test_modo_todas_con_busqueda_muestra_raiz_contextual_de_hija_coincidente() -> None:
+    rows = (
+        make_row("raiz", title="Raíz", description="sin coincidencia"),
+        make_row("otra-raiz", title="Otra raíz", description="sin coincidencia"),
+        make_row("hija", title="Hija", description="contiene docker", parent_id="raiz"),
+    )
+
+    state = SessionListState.from_sessions(
+        rows,
+        query="docker",
+        view_mode=SessionViewMode.ALL,
+    )
+
+    assert [row.id for row in state.visible_sessions] == ["raiz", "hija"]
+    assert [row.display_title for row in state.visible_sessions] == ["Raíz", "└─ Hija"]
+    assert state.selected_id == "raiz"
+
+
+def test_cambio_de_modo_preserva_o_reubica_seleccion() -> None:
+    rows = (
+        make_row("raiz", title="Raíz"),
+        make_row("hija", title="Hija", parent_id="raiz"),
+    )
+    state = SessionListState.from_sessions(rows).with_view_mode(SessionViewMode.ALL)
+
+    selected_child = state.with_selected_id("hija")
+    roots = selected_child.with_view_mode(SessionViewMode.ROOTS)
+
+    assert selected_child.selected_id == "hija"
+    assert [row.id for row in roots.visible_sessions] == ["raiz"]
+    assert roots.selected_id == "raiz"
 
 
 def test_preserva_seleccion_si_sigue_visible_tras_filtrar() -> None:
@@ -174,6 +284,7 @@ def make_row(
     title: str = "Título",
     description: str = "Descripción",
     summary: str = "Resumen",
+    parent_id: str | None = None,
 ) -> SessionRow:
     return SessionRow.create(
         session_id=session_id,
@@ -181,4 +292,5 @@ def make_row(
         description=description,
         summary=summary,
         updated_at=None,
+        parent_id=parent_id,
     )

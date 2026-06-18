@@ -21,6 +21,7 @@ class IncompatibleSchemaError(SQLiteRepositoryError):
 @dataclass(frozen=True)
 class SessionRecord:
     id: str
+    parent_id: str | None
     title: str | None
     directory: str
     time_created: int | None
@@ -31,7 +32,7 @@ class SessionRecord:
 
 class SQLiteSessionRepository:
     required_columns = {
-        "session": {"id", "directory", "title", "time_created", "time_updated"},
+        "session": {"id", "parent_id", "directory", "title", "time_created", "time_updated"},
         "message": {"id", "session_id", "data", "time_created"},
         "part": {"id", "session_id", "message_id", "data"},
     }
@@ -46,7 +47,7 @@ class SQLiteSessionRepository:
                 self._validate_schema(connection)
                 rows = connection.execute(
                     """
-                    SELECT id, title, directory, time_created, time_updated
+                    SELECT id, parent_id, title, directory, time_created, time_updated
                     FROM session
                     WHERE directory = ?
                     ORDER BY time_updated DESC, time_created DESC, id ASC
@@ -60,6 +61,7 @@ class SQLiteSessionRepository:
                     records.append(
                         SessionRecord(
                             id=row["id"],
+                            parent_id=row["parent_id"],
                             title=row["title"],
                             directory=row["directory"],
                             time_created=row["time_created"],

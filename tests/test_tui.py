@@ -4,7 +4,9 @@ import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from opencode_session_navigator.application import SessionListState
+from textual.widgets import DataTable, Footer, Static
+
+from opencode_session_navigator.application import SessionListState, SessionViewMode
 from opencode_session_navigator.domain import SessionRow
 from opencode_session_navigator.infra.opencode_cli import OpenCodeCliError
 from opencode_session_navigator.tui import (
@@ -44,7 +46,7 @@ def test_controlador_filtra_y_navega_sin_reconsultar_sqlite() -> None:
     controller.move_selection(1)
 
     selected = selected_row(controller.state)
-    assert loader.calls == [(Path("/repo"), "", "a")]
+    assert loader.calls == [(Path("/repo"), "", "a", SessionViewMode.ROOTS)]
     assert [row.id for row in controller.state.visible_sessions] == ["b"]
     assert selected is not None
     assert selected.id == "b"
@@ -67,7 +69,7 @@ def test_controlador_abre_sesion_y_restaurar_filtro_y_seleccion() -> None:
 
     assert returncode == 0
     assert launcher.launched_ids == ["b"]
-    assert loader.calls[-1] == (Path("/repo"), "sqlite", "b")
+    assert loader.calls[-1] == (Path("/repo"), "sqlite", "b", SessionViewMode.ROOTS)
     assert [row.id for row in controller.state.visible_sessions] == ["b"]
     assert controller.state.selected_id == "b"
 
@@ -133,7 +135,7 @@ def test_controlador_reporta_codigo_no_cero_y_restaura_estado() -> None:
     returncode = controller.open_selected()
 
     assert returncode == 7
-    assert loader.calls[-1] == (Path("/repo"), "sqlite", "b")
+    assert loader.calls[-1] == (Path("/repo"), "sqlite", "b", SessionViewMode.ROOTS)
     assert controller.state.selected_id == "b"
     assert "código 7" in controller.status_message
     assert "se recargó la TUI" in controller.status_message
@@ -154,7 +156,7 @@ def test_controlador_conserva_error_visible_si_falla_recarga_despues_de_opencode
     returncode = controller.open_selected()
 
     assert returncode == 0
-    assert loader.calls[-1] == (Path("/repo"), "", "a")
+    assert loader.calls[-1] == (Path("/repo"), "", "a", SessionViewMode.ROOTS)
     assert controller.error_message is not None
     assert "opencode db path falló al volver" in controller.error_message
     assert "OpenCode" in controller.status_message
@@ -194,6 +196,103 @@ def test_app_textual_filtra_navega_con_flechas_y_abre_con_enter() -> None:
     asyncio.run(run_app())
 
 
+def test_app_textual_muestra_ayuda_de_ctrl_t_y_footer() -> None:
+    async def run_app() -> None:
+        controller = TuiSessionController(
+            loader=FakeLoader((make_row("raiz", title="Raíz"),)),
+            launcher=FakeLauncher(),
+            cwd=Path("/repo"),
+        )
+        app = SessionNavigatorApp(controller)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            status = app.query_one("#status", Static)
+            footer = app.query_one(Footer)
+
+            assert "Ctrl+T alterna raíces/todas" in str(status.content)
+            assert footer.display
+            assert any(
+                getattr(binding, "key", None) == "ctrl+t"
+                and getattr(binding, "description", None) == "Raíz/todas"
+                for binding in app.BINDINGS
+            )
+
+    asyncio.run(run_app())
+
+
+def test_app_textual_renderiza_prefijos_de_arbol_en_tabla() -> None:
+    async def run_app() -> None:
+        controller = TuiSessionController(
+            loader=FakeLoader(
+                (
+                    make_row("raiz", title="Raíz"),
+                    make_row("hija-a", title="Hija A", parent_id="raiz"),
+                    make_row("hija-b", title="Hija B", parent_id="raiz"),
+                )
+            ),
+            launcher=FakeLauncher(),
+            cwd=Path("/repo"),
+        )
+        app = SessionNavigatorApp(controller)
+
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+            table = app.query_one("#sessions", DataTable)
+
+            assert table.row_count == 3
+            assert [table.get_row_at(index)[0] for index in range(table.row_count)] == [
+                "Raíz",
+                "└─ Hija A",
+                "└─ Hija B",
+            ]
+
+    asyncio.run(run_app())
+
+
+def test_controlador_alterna_modo_y_preserva_seleccion_visible() -> None:
+    controller = TuiSessionController(
+        loader=FakeLoader(
+            (
+                make_row("raiz", title="Raíz"),
+                make_row("hija", title="Hija", parent_id="raiz"),
+            )
+        ),
+        launcher=FakeLauncher(),
+        cwd=Path("/repo"),
+    )
+    controller.load()
+
+    controller.toggle_view_mode()
+
+    assert controller.state.view_mode == SessionViewMode.ALL
+    assert [row.id for row in controller.state.visible_sessions] == ["raiz", "hija"]
+    assert controller.state.selected_id == "raiz"
+    assert "modo todas" in controller.status_message
+
+
+def test_controlador_abre_raiz_contextual_real() -> None:
+    launcher = FakeLauncher()
+    controller = TuiSessionController(
+        loader=FakeLoader(
+            (
+                make_row("raiz", title="Raíz", description="sin match"),
+                make_row("hija", title="Hija", description="sqlite", parent_id="raiz"),
+            )
+        ),
+        launcher=launcher,
+        cwd=Path("/repo"),
+    )
+    controller.load()
+    controller.apply_query("sqlite")
+
+    returncode = controller.open_selected()
+
+    assert returncode == 0
+    assert launcher.launched_ids == ["raiz"]
+
+
 def test_describe_state_reporta_sin_resultados() -> None:
     state = SessionListState.from_sessions((make_row("a"),)).with_query("no-match")
 
@@ -203,7 +302,7 @@ def test_describe_state_reporta_sin_resultados() -> None:
 @dataclass
 class FakeLoader:
     rows: tuple[SessionRow, ...]
-    calls: list[tuple[Path, str, str | None]] = field(default_factory=list)
+    calls: list[tuple[Path, str, str | None, SessionViewMode]] = field(default_factory=list)
     error: Exception | None = None
 
     def load(
@@ -212,11 +311,14 @@ class FakeLoader:
         *,
         query: str = "",
         selected_id: str | None = None,
+        view_mode: SessionViewMode = SessionViewMode.ROOTS,
     ) -> SessionListState:
-        self.calls.append((cwd, query, selected_id))
+        self.calls.append((cwd, query, selected_id, view_mode))
         if self.error is not None:
             raise self.error
-        return SessionListState.from_sessions(self.rows, query=query, selected_id=selected_id)
+        return SessionListState.from_sessions(
+            self.rows, query=query, selected_id=selected_id, view_mode=view_mode
+        )
 
 
 @dataclass
@@ -229,6 +331,7 @@ class FailingLoader:
         *,
         query: str = "",
         selected_id: str | None = None,
+        view_mode: SessionViewMode = SessionViewMode.ROOTS,
     ) -> SessionListState:
         raise self.error
 
@@ -252,6 +355,7 @@ def make_row(
     title: str = "Título",
     description: str = "Descripción",
     summary: str = "Resumen",
+    parent_id: str | None = None,
 ) -> SessionRow:
     return SessionRow.create(
         session_id=session_id,
@@ -259,4 +363,5 @@ def make_row(
         description=description,
         summary=summary,
         updated_at=None,
+        parent_id=parent_id,
     )

@@ -8,7 +8,11 @@ from textual.app import App, ComposeResult, SuspendNotSupported
 from textual.binding import Binding
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
-from opencode_session_navigator.application import SessionListState, SessionNavigator
+from opencode_session_navigator.application import (
+    SessionListState,
+    SessionNavigator,
+    SessionViewMode,
+)
 from opencode_session_navigator.domain import SessionRow
 from opencode_session_navigator.infra.opencode_cli import OpenCodeCli, OpenCodeCliError
 from opencode_session_navigator.infra.sqlite_repo import (
@@ -24,6 +28,7 @@ class SessionLoader(Protocol):
         *,
         query: str = "",
         selected_id: str | None = None,
+        view_mode: SessionViewMode = SessionViewMode.ROOTS,
     ) -> SessionListState: ...
 
 
@@ -41,9 +46,12 @@ class DefaultSessionLoader:
         *,
         query: str = "",
         selected_id: str | None = None,
+        view_mode: SessionViewMode = SessionViewMode.ROOTS,
     ) -> SessionListState:
         repository = SQLiteSessionRepository(self.cli.db_path())
-        return SessionNavigator(repository).load(cwd, query=query, selected_id=selected_id)
+        return SessionNavigator(repository).load(
+            cwd, query=query, selected_id=selected_id, view_mode=view_mode
+        )
 
 
 @dataclass
@@ -55,13 +63,22 @@ class TuiSessionController:
     status_message: str = "Cargando sesiones..."
     error_message: str | None = None
 
-    def load(self, *, query: str = "", selected_id: str | None = None) -> None:
+    def load(
+        self,
+        *,
+        query: str = "",
+        selected_id: str | None = None,
+        view_mode: SessionViewMode | None = None,
+    ) -> None:
+        next_view_mode = view_mode or self.state.view_mode
         try:
-            self.state = self.loader.load(self.cwd, query=query, selected_id=selected_id)
+            self.state = self.loader.load(
+                self.cwd, query=query, selected_id=selected_id, view_mode=next_view_mode
+            )
         except (OpenCodeCliError, SQLiteRepositoryError, OSError) as error:
             self.error_message = f"No se pudieron cargar las sesiones: {error}"
             self.status_message = "Revisá que OpenCode esté instalado y que la base sea accesible."
-            self.state = SessionListState.from_sessions((), query=query)
+            self.state = SessionListState.from_sessions((), query=query, view_mode=next_view_mode)
             return
 
         self.error_message = None
@@ -69,6 +86,15 @@ class TuiSessionController:
 
     def apply_query(self, query: str) -> None:
         self.state = self.state.with_query(query)
+        self.status_message = describe_state(self.cwd, self.state)
+
+    def toggle_view_mode(self) -> None:
+        next_mode = (
+            SessionViewMode.ALL
+            if self.state.view_mode == SessionViewMode.ROOTS
+            else SessionViewMode.ROOTS
+        )
+        self.state = self.state.with_view_mode(next_mode)
         self.status_message = describe_state(self.cwd, self.state)
 
     def move_selection(self, offset: int) -> None:
@@ -95,7 +121,7 @@ class TuiSessionController:
             self.status_message = f"No se pudo abrir la sesión {selected_id}: {error}"
             return None
 
-        self.load(query=query, selected_id=selected_id)
+        self.load(query=query, selected_id=selected_id, view_mode=self.state.view_mode)
         if self.error_message is not None:
             return returncode
 
@@ -120,6 +146,7 @@ class SessionNavigatorApp(App[None]):
         ("k", "cursor_up", "Subir"),
         Binding("enter", "open_selected", "Abrir", priority=True),
         ("r", "reload", "Recargar"),
+        Binding("ctrl+t", "toggle_view_mode", "Raíz/todas", priority=True),
     ]
 
     def __init__(self, controller: TuiSessionController) -> None:
@@ -159,7 +186,12 @@ class SessionNavigatorApp(App[None]):
         self.controller.load(
             query=self.controller.state.query,
             selected_id=self.controller.state.selected_id,
+            view_mode=self.controller.state.view_mode,
         )
+        self._sync_widgets()
+
+    def action_toggle_view_mode(self) -> None:
+        self.controller.toggle_view_mode()
         self._sync_widgets()
 
     async def action_open_selected(self) -> None:
@@ -181,7 +213,7 @@ class SessionNavigatorApp(App[None]):
         table = self.query_one("#sessions", DataTable)
         table.clear(columns=False)
         for row in self.controller.state.visible_sessions:
-            table.add_row(row.title, row.context, row.description, row.summary, key=row.id)
+            table.add_row(row.display_title, row.context, row.description, row.summary, key=row.id)
 
         index = selected_index_or_none(self.controller.state)
         if index is not None:
@@ -215,16 +247,23 @@ def selected_index_or_none(state: SessionListState) -> int | None:
 def describe_state(cwd: Path, state: SessionListState) -> str:
     total = len(state.all_sessions)
     visible = len(state.visible_sessions)
+    mode = "raíces" if state.view_mode == SessionViewMode.ROOTS else "todas"
     if total == 0:
         return (
             f"No hay sesiones para {cwd}. Abrí una sesión de OpenCode en este directorio "
             "y volvé a intentar."
         )
     if visible == 0:
-        return f"Sin resultados para el filtro actual en {cwd}. Borrá o ajustá la búsqueda."
+        return (
+            f"Sin resultados para el filtro actual en modo {mode} en {cwd}. "
+            "Borrá o ajustá la búsqueda."
+        )
     if state.query:
         return (
-            f"{visible} de {total} sesiones visibles para el filtro actual. "
+            f"{visible} de {total} sesiones visibles en modo {mode} para el filtro actual. "
             "Enter abre la selección."
         )
-    return f"{total} sesiones para {cwd}. Escribí para buscar; Enter abre la selección."
+    return (
+        f"{visible} de {total} sesiones visibles en modo {mode} para {cwd}. "
+        "Escribí para buscar; Ctrl+T alterna raíces/todas; Enter abre la selección."
+    )

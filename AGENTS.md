@@ -5,7 +5,7 @@ Este repositorio mantiene una TUI en Python/Textual para navegar sesiones locale
 ## Propósito y alcance actual
 
 - Producto: `opencode-session-navigator`, una TUI para listar, buscar y reabrir sesiones locales de OpenCode asociadas al `cwd` exacto.
-- Flujo principal: descubrir la base con `opencode db path`, leer SQLite en modo solo lectura, filtrar por `session.directory`, buscar por título/descripción/resumen y abrir con `opencode --session <id>`.
+- Flujo principal: descubrir la base con `opencode db path`, leer SQLite en modo solo lectura, filtrar por `session.directory`, mostrar raíces por defecto, buscar por título/descripción/resumen y abrir con `opencode --session <id>`.
 - Alcance v1: navegación local determinística, sin red, sin LLM, sin escrituras ni migraciones sobre la base de OpenCode.
 - Fuera de alcance actual: búsqueda por árbol de directorios, edición de sesiones, compatibilidad garantizada con futuros esquemas internos de OpenCode, exportación avanzada o resúmenes generativos.
 
@@ -16,7 +16,7 @@ cwd actual
   └─ cli.py resuelve Path.cwd().resolve()
       └─ OpenCodeCli descubre DB con opencode db path
           └─ SQLiteSessionRepository lee session/message/part en modo read-only
-              └─ SessionNavigator transforma registros en filas de dominio
+                  └─ SessionNavigator transforma registros en filas de dominio y deriva raíz/todas
                   └─ SessionNavigatorApp renderiza, filtra y lanza opencode --session <id>
 ```
 
@@ -88,7 +88,8 @@ uv run mypy
 ## Contratos de UX/TUI
 
 - Textual es la interfaz principal; la lógica testeable debe vivir en controlador/estado y no solo en callbacks de widgets.
-- Búsqueda: filtra en memoria por título, descripción y resumen normalizados juntos.
+- Búsqueda: filtra en memoria por título, descripción y resumen normalizados juntos. En modo raíces evalúa todas las sesiones del `cwd` exacto y puede mostrar hijas coincidentes con su raíz contextual seleccionable.
+- Vista: iniciar en raíces (`parent_id IS NULL`); `Ctrl+T` alterna a todas las sesiones agrupadas por raíz, con huérfanas visibles e identificadas.
 - Selección: preservar `selected_id` si sigue visible; si no, seleccionar el primer resultado visible; si no hay resultados, no seleccionar nada.
 - Navegación: flechas y `j`/`k` mueven la selección; `Enter` abre; `r` recarga; `q`/`Esc` salen.
 - Apertura: ejecutar `opencode --session <id>` como proceso interactivo con argv seguro, no como string de shell.

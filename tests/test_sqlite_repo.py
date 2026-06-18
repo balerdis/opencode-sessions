@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from opencode_session_navigator.application import SessionNavigator, SessionViewMode
 from opencode_session_navigator.infra.sqlite_repo import (
     IncompatibleSchemaError,
     SQLiteRepositoryError,
@@ -25,6 +26,7 @@ def test_list_sessions_filtra_por_cwd_exacto(tmp_path: Path) -> None:
     records = SQLiteSessionRepository(db_path).list_sessions(cwd)
 
     assert [record.id for record in records] == ["ses_app"]
+    assert records[0].parent_id is None
     assert records[0].user_texts == ("hola desde app",)
     assert records[0].assistant_texts == ("respuesta útil",)
 
@@ -44,6 +46,68 @@ def test_list_sessions_rechaza_esquema_incompatible(tmp_path: Path) -> None:
         SQLiteSessionRepository(db_path).list_sessions(tmp_path)
 
 
+def test_list_sessions_rechaza_session_sin_parent_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "opencode.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                directory TEXT NOT NULL,
+                title TEXT,
+                time_created INTEGER,
+                time_updated INTEGER
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                data TEXT NOT NULL,
+                time_created INTEGER
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                data TEXT NOT NULL
+            );
+            """
+        )
+
+    with pytest.raises(IncompatibleSchemaError, match="Faltan columnas en session: parent_id"):
+        SQLiteSessionRepository(db_path).list_sessions(tmp_path)
+
+
+def test_list_sessions_conserva_parent_id_nullable(tmp_path: Path) -> None:
+    db_path = crear_db_valida(tmp_path)
+    cwd = tmp_path / "repo"
+    insertar_sesion(db_path, "raiz", str(cwd), "Raíz", 20)
+    insertar_sesion(db_path, "hija", str(cwd), "Hija", 10, parent_id="raiz")
+
+    records = SQLiteSessionRepository(db_path).list_sessions(cwd)
+
+    assert [(record.id, record.parent_id) for record in records] == [
+        ("raiz", None),
+        ("hija", "raiz"),
+    ]
+
+
+def test_hija_con_padre_fuera_del_cwd_se_trata_como_huerfana(tmp_path: Path) -> None:
+    db_path = crear_db_valida(tmp_path)
+    cwd = tmp_path / "repo" / "app"
+    cwd_externo = tmp_path / "repo"
+    insertar_sesion(db_path, "padre-externo", str(cwd_externo), "Padre externo", 30)
+    insertar_sesion(db_path, "hija", str(cwd), "Hija", 20, parent_id="padre-externo")
+
+    state = SessionNavigator(SQLiteSessionRepository(db_path)).load(
+        cwd, view_mode=SessionViewMode.ALL
+    )
+
+    assert [row.id for row in state.all_sessions] == ["hija"]
+    assert [row.id for row in state.visible_sessions] == ["hija"]
+    assert state.visible_sessions[0].kind == "orphan"
+    assert state.visible_sessions[0].display_title == "↳ Huérfana · Hija"
+
+
 def test_list_sessions_rechaza_message_sin_time_created(tmp_path: Path) -> None:
     db_path = tmp_path / "opencode.db"
     with sqlite3.connect(db_path) as connection:
@@ -51,6 +115,7 @@ def test_list_sessions_rechaza_message_sin_time_created(tmp_path: Path) -> None:
             """
             CREATE TABLE session (
                 id TEXT PRIMARY KEY,
+                parent_id TEXT,
                 directory TEXT NOT NULL,
                 title TEXT,
                 time_created INTEGER,
@@ -171,6 +236,7 @@ def crear_db_valida(tmp_path: Path) -> Path:
             """
             CREATE TABLE session (
                 id TEXT PRIMARY KEY,
+                parent_id TEXT,
                 directory TEXT NOT NULL,
                 title TEXT,
                 time_created INTEGER,
@@ -194,15 +260,21 @@ def crear_db_valida(tmp_path: Path) -> Path:
 
 
 def insertar_sesion(
-    db_path: Path, session_id: str, directory: str, title: str, updated: int
+    db_path: Path,
+    session_id: str,
+    directory: str,
+    title: str,
+    updated: int,
+    *,
+    parent_id: str | None = None,
 ) -> None:
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             """
-            INSERT INTO session (id, directory, title, time_created, time_updated)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO session (id, parent_id, directory, title, time_created, time_updated)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (session_id, directory, title, updated - 1, updated),
+            (session_id, parent_id, directory, title, updated - 1, updated),
         )
 
 
